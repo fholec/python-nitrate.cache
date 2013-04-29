@@ -2270,9 +2270,13 @@ class Tag(Nitrate):
             self._name = arg
             id = None
         # Both
-        elif isinstance(arg, hash):
-            # Create entry in cache
-            pass
+        elif isinstance(arg, list):
+            # Multiple objects given, create entries in cache from list
+            for entry in arg:
+                cls._cache[entry.keys()] = entry.values()
+        elif isinstance(arg, dictionary):
+            # One object given, create entry in cache
+            cls._cache[arg.keys()] = arg.values()
         else:
             raise NitrateError("Need either tag id or tag name "
                     "to initialize the Tag object.")
@@ -2297,7 +2301,6 @@ class Tag(Nitrate):
                 log.debug("Initializing tags " + self.identifier)
                 log.debug(pretty(hash))
                 self._name = hash[0]["name"]
-                print self._name
             except IndexError:
                 raise NitrateError(
                         "Cannot find tag for {0}".format(self.identifier))
@@ -2307,6 +2310,7 @@ class Tag(Nitrate):
                 log.info(u"Fetching tag '{0}'".format(self.name))
                 hash = self._server.Tag.get_tags(
                         {'names': [self.name]})
+                # Problem if name is not found
                 log.debug(u"Initializing tag '{0}'".format(
                         self.name))
                 log.debug(pretty(hash))
@@ -2314,6 +2318,7 @@ class Tag(Nitrate):
             except IndexError:
                 raise NitrateError(
                         "Cannot find tag for '{0}'".format(self.name))
+                self._id = None
 
 
 # ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
