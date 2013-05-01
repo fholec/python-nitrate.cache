@@ -2569,25 +2569,19 @@ class Tag(Nitrate):
     # Local cache for Tag
     _cache = {}
 
+    # Resolve entry name
+    @classmethod
+    def _entry_name(cls, id, kwargs):
+        if id is not None:
+            return id
+
+        # Indexing by name
+        if 'name' in kwargs:
+            return kwargs.get("name")
+
     # ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
     #  Tag Special
     # ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
-
-    def __new__(cls, id=None, name=None, **kwargs):
-        """ Create a new object, handle caching if enabled. """
-        if _cache_level >= CACHE_OBJECTS and id is not None:
-            # Search the cache
-            if id in Tag._cache:
-                log.debug("Using cached tag ID#{0}".format(id))
-                return Tag._cache[id]
-            # Not cached yet, create a new one and cache
-            else:
-                log.debug("Caching tag ID#{0}".format(id))
-                new = Nitrate.__new__(cls)
-                Tag._cache[id] = new
-                return new
-        else:
-            return Nitrate.__new__(cls)
 
     def __init__(self, id=None, name=None):
         """ Initialize by tag id or tag name """
@@ -2609,6 +2603,9 @@ class Tag(Nitrate):
             raise NitrateError("Need either tag id or tag name "
                     "to initialize the Tag object.")
         Nitrate.__init__(self, id)
+        if get_cache_level() >= CACHE_OBJECTS:
+            self._get()
+            Tag._cache[self.id] = Tag._cache[self.name] = self
 
     def __unicode__(self):
         """ Tag name for printing. """
