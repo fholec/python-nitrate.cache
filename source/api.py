@@ -459,11 +459,15 @@ class Nitrate(object):
 
     # Class method that checks if object with id is already in cache
     @classmethod
-    def _cache_lookup(cls, id, kwargs):
-        try:
+    def _cache_lookup(cls, id):
+        # ID check
+        if isinstance(id, int) or isinstance(id, basestring):
             return cls._cache[id]
-        except KeyError:
-            return None
+
+        #if isinstance(id, dict):
+        #    return cls._cache[id['id']]
+
+        return None
 
     # ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
     #  Nitrate Special
@@ -472,21 +476,22 @@ class Nitrate(object):
     def __new__(cls, id=None, **kwargs):
         """ Create a new object, handle caching if enabled. """
 
-        if _cache_level >= CACHE_OBJECTS:
-            # Search the cache for ID
-            if cls._cache_lookup(id, kwargs) is not None:
-                log.debug("Using cached object {0} {1}".format(
-                        cls.__name__, id))
-                return cls._cache_lookup(id, kwargs)
-            else:
-                # Object not cached yet, create a new one and cache it
-                log.debug("Caching {0} {1}".format(cls.__name__, id))
-                new = super(Nitrate, cls).__new__(cls)
-                entry_name = cls._entry_name(id, kwargs)
-                cls._cache[entry_name] = new
-                return new
-        else:
+        if _cache_level < CACHE_OBJECTS:
             return super(Nitrate, cls).__new__(cls)
+
+        # Search the cache for ID
+        try:
+            cls._cache[id]
+            log.debug("Using cached object {0} {1}".format(
+                    cls.__name__, id))
+            return cls._cache_lookup(id)
+        except:
+            # Object not cached yet, create a new one and cache it
+            log.debug("Caching {0} {1}".format(cls.__name__, id))
+            new = super(Nitrate, cls).__new__(cls)
+            entry_name = cls._entry_name(id, kwargs)
+            cls._cache[entry_name] = new
+            return new
 
     def __init__(self, id=None, prefix="ID"):
         """ Initialize the object id, prefix and internal attributes. """
@@ -559,12 +564,6 @@ class Cache(Nitrate):
         local persistent cache.
     """
 
-    def _determine_file_path(self):
-        if hasattr(Config(), expiration):
-            if hasattr(Config().expiration, file):
-                return Config().expiration.file
-        return '/tmp/data.pkl'
-
     def _dump_cache(self):
         # Open file to cache classes
         output_file = open('/tmp/data.pkl', 'wb')
@@ -582,6 +581,12 @@ class Cache(Nitrate):
         for current_class in [Build, User, Category, TestCase]:
             current_class._cache = data[current_class.__name__]
         input_file.close()
+
+    def _determine_file_path(self):
+        if hasattr(Config(), expiration):
+            if hasattr(Config().expiration, file):
+                return Config().expiration.file
+        return '/tmp/data.pkl'
 
 
 # ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
@@ -2590,6 +2595,7 @@ class Tag(Nitrate):
         if getattr(self, "_id", None) is not None:
             return
 
+        # Init by hash (object)
         # Initialized by name
         if isinstance(id, basestring):
             name = id
