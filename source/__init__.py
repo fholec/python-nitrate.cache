@@ -147,7 +147,7 @@ __all__ = """
         TestPlan PlanType PlanStatus
         TestRun RunStatus
         TestCase CaseStatus
-        CaseRun Status
+        CaseRun Status Cache Tag
 
         ascii color listed pretty
         log info setLogLevel
@@ -155,6 +155,5 @@ __all__ = """
         setColorMode COLOR_ON COLOR_OFF COLOR_AUTO
         set_log_level set_cache_level set_color_mode
         get_log_level get_cache_level get_color_mode
-        Tag
         """.split()
 

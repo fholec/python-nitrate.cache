@@ -462,12 +462,19 @@ class Nitrate(object):
     def _cache_lookup(cls, id):
         # ID check
         if isinstance(id, int) or isinstance(id, basestring):
-            return cls._cache[id]
+            if cls._cache[id] is not None:
+                log.debug("Using cached object {0} {1}".format(
+                        cls.__name__, id))
+                return cls._cache[id]
 
-        #if isinstance(id, dict):
-        #    return cls._cache[id['id']]
+        # Check dictionary (only ID so far)
+        if isinstance(id, dict):
+            if cls._cache[id['id']] is not None:
+                log.debug("Using cached object {0} {1}".format(
+                        cls.__name__, id))
+                return cls._cache[id['id']]
 
-        return None
+        raise AttributeError
 
     # ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
     #  Nitrate Special
@@ -481,16 +488,15 @@ class Nitrate(object):
 
         # Search the cache for ID
         try:
-            cls._cache[id]
-            log.debug("Using cached object {0} {1}".format(
-                    cls.__name__, id))
             return cls._cache_lookup(id)
         except:
             # Object not cached yet, create a new one and cache it
             log.debug("Caching {0} {1}".format(cls.__name__, id))
+            if isinstance(id, dict):
+                id = id['id']
             new = super(Nitrate, cls).__new__(cls)
-            entry_name = cls._entry_name(id, kwargs)
-            cls._cache[entry_name] = new
+            if id is not None:
+                cls._cache[id] = new
             return new
 
     def __init__(self, id=None, prefix="ID"):
@@ -550,11 +556,6 @@ class Nitrate(object):
         """ Fetch object data from the server. """
         raise NitrateError("To be implemented by respective class")
 
-    # Resolve entry name
-    @classmethod
-    def _entry_name(cls, id, kwargs):
-        return id
-
 
 # ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
 #  Cache Class
@@ -564,29 +565,34 @@ class Cache(Nitrate):
         local persistent cache.
     """
 
+    global CLASSES
+
+    def determine_file_path():
+        try:
+            return Config().expiration.file
+        except:
+            return '/tmp/data.pkl'
+
+    _file_name = determine_file_path()
+
     def _dump_cache(self):
         # Open file to cache classes
-        output_file = open('/tmp/data.pkl', 'wb')
+        output_file = open(self._file_name, 'wb')
         output = {}
-        for current_class in [Build, User, Category, TestCase]:
+        for current_class in CLASSES:
             output[current_class.__name__] = current_class._cache
-
-        print output
+        # Dump caches to file
         pickle.dump(output, output_file)
         output_file.close()
 
     def _load_cache(self):
-        input_file = open('/tmp/data.pkl', 'rb')
+        # Open file to load caches
+        input_file = open(self._file_name, 'rb')
+        # Load caches from file
         data = pickle.load(input_file)
-        for current_class in [Build, User, Category, TestCase]:
+        for current_class in CLASSES:
             current_class._cache = data[current_class.__name__]
         input_file.close()
-
-    def _determine_file_path(self):
-        if hasattr(Config(), expiration):
-            if hasattr(Config().expiration, file):
-                return Config().expiration.file
-        return '/tmp/data.pkl'
 
 
 # ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
@@ -668,7 +674,7 @@ class Build(Nitrate):
     #  Build Special
     # ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
 
-    def __init__(self, id=None, product=None, build=None):
+    def __init__(self, id=None, product=None, build=None, hash=None):
         """ Initialize by build id or product and build name. """
 
         # If we are a cached-already object no init is necessary
@@ -688,6 +694,10 @@ class Build(Nitrate):
             else:
                 self._product = Product(id=product)
             self._name = build
+        elif hash is not None:
+            self._get(hash)
+            Build._cache[hash['id']] = Build._cache[
+                    hash['name']+'+'+hash['product'].name] = self
         else:
             raise NitrateError("Need either build id or both product "
                     "and build name to initialize the Build object.")
@@ -701,35 +711,43 @@ class Build(Nitrate):
     #  Build Methods
     # ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
 
-    def _get(self):
+    def _get(self, hash=None):
         """ Get the missing build data. """
 
-        # Search by id
-        if self._id is not NitrateNone:
-            try:
-                log.info("Fetching build " + self.identifier)
-                hash = self._server.Build.get(self.id)
-                log.debug("Initializing build " + self.identifier)
-                log.debug(pretty(hash))
-                self._name = hash["name"]
-                self._product = Product(hash["product_id"])
-            except LookupError:
-                raise NitrateError(
-                        "Cannot find build for " + self.identifier)
-        # Search by product and name
+        if hash is None:
+            # Search by id
+            if self._id is not NitrateNone:
+                try:
+                    log.info("Fetching build " + self.identifier)
+                    hash = self._server.Build.get(self.id)
+                    log.debug("Initializing build " + self.identifier)
+                    log.debug(pretty(hash))
+                    self._name = hash["name"]
+                    self._product = Product(hash["product_id"])
+                except LookupError:
+                    raise NitrateError(
+                            "Cannot find build for " + self.identifier)
+            # Search by product and name
+            else:
+                try:
+                    log.info(u"Fetching build '{0}' of '{1}'".format(
+                            self.name, self.product.name))
+                    hash = self._server.Build.check_build(
+                            self.name, self.product.id)
+                    log.debug(u"Initializing build '{0}' of '{1}'".format(
+                            self.name, self.product.name))
+                    log.debug(pretty(hash))
+                    self._id = hash["build_id"]
+                except LookupError:
+                    raise NitrateError("Build '{0}' not found in '{1}'".format(
+                        self.name, self.product.name))
         else:
-            try:
-                log.info(u"Fetching build '{0}' of '{1}'".format(
-                        self.name, self.product.name))
-                hash = self._server.Build.check_build(
-                        self.name, self.product.id)
-                log.debug(u"Initializing build '{0}' of '{1}'".format(
-                        self.name, self.product.name))
-                log.debug(pretty(hash))
-                self._id = hash["build_id"]
-            except LookupError:
-                raise NitrateError("Build '{0}' not found in '{1}'".format(
-                    self.name, self.product.name))
+            # Save values
+            log.debug("Initializing Build ID#{0}".format(hash["id"]))
+            log.debug(pretty(hash))
+            self._id = hash["id"]
+            self._name = hash["name"]
+            self._product = hash["product"]
 
     # ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
     #  Build Self Test
@@ -789,13 +807,17 @@ class Category(Nitrate):
     #  Category Special
     # ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
 
-    def __init__(self, id=None, product=None, category=None):
+    def __init__(self, id=None, product=None, category=None, hash=None):
         """ Initialize by category id or product and category name. """
 
         # If we are a cached-already object no init is necessary
         if getattr(self, "_id", None) is not None:
             return
 
+        # Init by hash
+        if isinstance(id, dict):
+            hash = id
+            id = None
         # Initialized by id
         if id is not None:
             self._name = self._product = NitrateNone
@@ -809,6 +831,10 @@ class Category(Nitrate):
             else:
                 self._product = Product(id=product)
             self._name = category
+        elif hash is not None:
+            self._get(hash)
+            Category._cache[hash['id']] = Category._cache[
+                    hash['name']+'+'+hash['product'].name] = self
         else:
             raise NitrateError("Need either category id or both product "
                     "and category name to initialize the Category object.")
@@ -822,35 +848,43 @@ class Category(Nitrate):
     #  Category Methods
     # ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
 
-    def _get(self):
+    def _get(self, hash=None):
         """ Get the missing category data. """
 
-        # Search by id
-        if self._id is not NitrateNone:
-            try:
-                log.info("Fetching category " + self.identifier)
-                hash = self._server.Product.get_category(self.id)
-                log.debug("Initializing category " + self.identifier)
-                log.debug(pretty(hash))
-                self._name = hash["name"]
-                self._product = Product(hash["product_id"])
-            except xmlrpclib.Fault:
-                raise NitrateError(
-                        "Cannot find category for " + self.identifier)
-        # Search by product and name
+        if hash is None:
+            # Search by id
+            if self._id is not NitrateNone:
+                try:
+                    log.info("Fetching category " + self.identifier)
+                    hash = self._server.Product.get_category(self.id)
+                    log.debug("Initializing category " + self.identifier)
+                    log.debug(pretty(hash))
+                    self._name = hash["name"]
+                    self._product = Product(hash["product_id"])
+                except xmlrpclib.Fault:
+                    raise NitrateError(
+                            "Cannot find category for " + self.identifier)
+            # Search by product and name
+            else:
+                try:
+                    log.info(u"Fetching category '{0}' of '{1}'".format(
+                            self.name, self.product.name))
+                    hash = self._server.Product.check_category(
+                            self.name, self.product.id)
+                    log.debug(u"Initializing category '{0}' of '{1}'".format(
+                            self.name, self.product.name))
+                    log.debug(pretty(hash))
+                    self._id = hash["id"]
+                except xmlrpclib.Fault:
+                    raise NitrateError("Category '{0}' not found in '{1}'".format(
+                        self.name, self.product.name))
         else:
-            try:
-                log.info(u"Fetching category '{0}' of '{1}'".format(
-                        self.name, self.product.name))
-                hash = self._server.Product.check_category(
-                        self.name, self.product.id)
-                log.debug(u"Initializing category '{0}' of '{1}'".format(
-                        self.name, self.product.name))
-                log.debug(pretty(hash))
-                self._id = hash["id"]
-            except xmlrpclib.Fault:
-                raise NitrateError("Category '{0}' not found in '{1}'".format(
-                    self.name, self.product.name))
+            # Save values
+            log.debug("Initializing Category ID#{0}".format(hash["id"]))
+            log.debug(pretty(hash))
+            self._id = hash["id"]
+            self._name = hash["name"]
+            self._product = hash["product"]
 
     # ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
     #  Category Self Test
@@ -925,21 +959,11 @@ class PlanType(Nitrate):
     id = property(_getter("id"), doc="Test plan type id")
     name = property(_getter("name"), doc="Test plan type name")
 
-    # Resolve entry name
-    @classmethod
-    def _entry_name(cls, id, kwargs):
-        if id is not None:
-            return id
-
-        # Indexing by name
-        if 'name' in kwargs:
-            return kwargs.get("name")
-
     # ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
     #  PlanType Special
     # ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
 
-    def __init__(self, id=None, name=None):
+    def __init__(self, id=None, name=None, hash=None):
         """ Initialize by test plan type id or name """
 
         # If we are a cached-already object no init is necessary
@@ -958,6 +982,8 @@ class PlanType(Nitrate):
         elif name is not None:
             self._name = name
             self._id = NitrateNone
+        elif hash is not None:
+            pass
         else:
             raise NitrateError(
                     "Need either id or name to initialize the PlanType object")
@@ -965,7 +991,7 @@ class PlanType(Nitrate):
 
         # Create entries in cache that reference the same object
         if get_cache_level() >= CACHE_OBJECTS:
-            self._get()
+            self._get(hash)
             PlanType._cache[self.id] = PlanType._cache[self.name] = self
 
     def __unicode__(self):
@@ -976,32 +1002,39 @@ class PlanType(Nitrate):
     #  PlanType Methods
     # ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
 
-    def _get(self):
+    def _get(self, hash=None):
         """ Get the missing test plan type data """
 
-        # Search by id
-        if self._id is not NitrateNone:
-            try:
-                log.info("Fetching test plan type " + self.identifier)
-                hash = self._server.TestPlan.get_plan_type(self.id)
-                log.debug("Initializing test plan type " + self.identifier)
-                log.debug(pretty(hash))
-                self._name = hash["name"]
-            except xmlrpclib.Fault:
-                raise NitrateError(
-                        "Cannot find test plan type for " + self.identifier)
-        # Search by name
+        if hash is None:
+            # Search by id
+            if self._id is not NitrateNone:
+                try:
+                    log.info("Fetching test plan type " + self.identifier)
+                    hash = self._server.TestPlan.get_plan_type(self.id)
+                    log.debug("Initializing test plan type " + self.identifier)
+                    log.debug(pretty(hash))
+                    self._name = hash["name"]
+                except xmlrpclib.Fault:
+                    raise NitrateError(
+                            "Cannot find test plan type for " + self.identifier)
+            # Search by name
+            else:
+                try:
+                    log.info(u"Fetching test plan type '{0}'".format(self.name))
+                    hash = self._server.TestPlan.check_plan_type(self.name)
+                    log.debug(u"Initializing test plan type '{0}'".format(
+                            self.name))
+                    log.debug(pretty(hash))
+                    self._id = hash["id"]
+                except xmlrpclib.Fault:
+                    raise NitrateError("PlanType '{0}' not found".format(
+                            self.name))
         else:
-            try:
-                log.info(u"Fetching test plan type '{0}'".format(self.name))
-                hash = self._server.TestPlan.check_plan_type(self.name)
-                log.debug(u"Initializing test plan type '{0}'".format(
-                        self.name))
-                log.debug(pretty(hash))
-                self._id = hash["id"]
-            except xmlrpclib.Fault:
-                raise NitrateError("PlanType '{0}' not found".format(
-                        self.name))
+            # Save values
+            log.debug("Initializing PlanType ID#{0}".format(hash["id"]))
+            log.debug(pretty(hash))
+            self._id = hash["id"]
+            self._name = hash["name"]
 
     # ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
     #  PlanType Self Test
@@ -1175,21 +1208,11 @@ class Product(Nitrate):
     version = property(_getter("version"), _setter("version"),
             doc="Default product version")
 
-    # Resolve entry name
-    @classmethod
-    def _entry_name(cls, id, kwargs):
-        if id is not None:
-            return id
-
-        # Indexing by name
-        if 'name' in kwargs:
-            return kwargs.get("name")
-
     # ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
     #  Product Special
     # ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
 
-    def __init__(self, id=None, name=None, version=None):
+    def __init__(self, id=None, name=None, version=None, hash=None):
         """ Initialize the Product.
 
         One of id or name parameters must be provided. Optional version
@@ -1200,8 +1223,12 @@ class Product(Nitrate):
         if getattr(self, "_id", None) is not None:
             return
 
+        # Init by hash
+        if isinstance(id, dict):
+            hash = id
+            id = None
         # Init by name (in id)
-        if isinstance(id, basestring):
+        elif isinstance(id, basestring):
             name = id
             id = None
         # Initialize by id
@@ -1212,13 +1239,15 @@ class Product(Nitrate):
         elif name is not None:
             self._name = name
             self._id = NitrateNone
+        elif hash is not None:
+            pass
         else:
             raise NitrateError("Need id or name to initialize Product")
         Nitrate.__init__(self, id)
 
         # Create entries in cache that reference the same object
         if get_cache_level() >= CACHE_OBJECTS:
-            self._get()
+            self._get(hash)
             Product._cache[self.id] = Product._cache[self.name] = self
 
         # Optionally initialize version
@@ -1244,31 +1273,40 @@ class Product(Nitrate):
     #  Product Methods
     # ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
 
-    def _get(self):
+    def _get(self, hash=None):
         """ Fetch product data from the server. """
 
-        # Search by id
-        if self._id is not NitrateNone:
-            try:
-                log.info("Fetching product " + self.identifier)
-                hash = self._server.Product.filter({'id': self.id})[0]
-                log.debug("Initializing product " + self.identifier)
-                log.debug(pretty(hash))
-                self._name = hash["name"]
-            except IndexError:
-                raise NitrateError(
-                        "Cannot find product for " + self.identifier)
-        # Search by name
+        if hash is None:
+            # Search by id
+            if self._id is not NitrateNone:
+                try:
+                    log.info("Fetching product " + self.identifier)
+                    hash = self._server.Product.filter({'id': self.id})[0]
+                    log.debug("Initializing product " + self.identifier)
+                    log.debug(pretty(hash))
+                    self._name = hash["name"]
+                except IndexError:
+                    raise NitrateError(
+                            "Cannot find product for " + self.identifier)
+            # Search by name
+            else:
+                try:
+                    log.info(u"Fetching product '{0}'".format(self.name))
+                    hash = self._server.Product.filter({'name': self.name})[0]
+                    log.debug(u"Initializing product '{0}'".format(self.name))
+                    log.debug(pretty(hash))
+                    self._id = hash["id"]
+                except IndexError:
+                    raise NitrateError(
+                            "Cannot find product for '{0}'".format(self.name))
         else:
-            try:
-                log.info(u"Fetching product '{0}'".format(self.name))
-                hash = self._server.Product.filter({'name': self.name})[0]
-                log.debug(u"Initializing product '{0}'".format(self.name))
-                log.debug(pretty(hash))
-                self._id = hash["id"]
-            except IndexError:
-                raise NitrateError(
-                        "Cannot find product for '{0}'".format(self.name))
+            # Save values
+            log.debug("Initializing Product ID#{0}".format(hash["id"]))
+            log.debug(pretty(hash))
+            self._id = hash["id"]
+            self._name = hash["name"]
+            if 'version' in hash:
+                self._version = hash["version"]
 
     # ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
     #  Product Self Test
@@ -1576,20 +1614,6 @@ class User(Nitrate):
     email = property(_getter("email"), doc="User email address.")
     name = property(_getter("name"), doc="User first name and last name.")
 
-    # Resolve entry name
-    @classmethod
-    def _entry_name(cls, id, kwargs):
-        if id is not None:
-            return id
-
-        # Indexing by login
-        if 'login' in kwargs:
-            return kwargs.get("login")
-
-        # Indexing by email
-        if 'email' in kwargs:
-            return kwargs.get("email")
-
     # ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
     #  User Special
     # ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
@@ -1608,17 +1632,19 @@ class User(Nitrate):
         # Initialize values
         self._name = self._login = self._email = NitrateNone
         id, login, email = self._parse(id, login, email)
+        # Init by hash
+        if isinstance(id, dict):
+            hash = id
+            id = None
         Nitrate.__init__(self, id, prefix="UID")
-        if hash is not None:
-            self._get(hash=hash)
-        elif login is not None:
+        if login is not None:
             self._login = login
         elif email is not None:
             self._email = email
 
         # Create entries in cache that reference the same object
         if get_cache_level() >= CACHE_OBJECTS:
-            self._get()
+            self._get(hash)
             User._cache[self.id] = User._cache[self.login] = User._cache[self.email] = self
 
     def __unicode__(self):
@@ -1826,13 +1852,17 @@ class Version(Nitrate):
     #  Version Special
     # ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
 
-    def __init__(self, id=None, product=None, version=None):
+    def __init__(self, id=None, product=None, version=None, hash=None):
         """ Initialize by version id or product and version. """
 
         # If we are a cached-already object no init is necessary
         if getattr(self, "_id", None) is not None:
             return
 
+        # Init by hash
+        if isinstance(id, dict):
+            hash = id
+            id = None
         # Initialized by id
         if id is not None:
             self._name = self._product = NitrateNone
@@ -1846,6 +1876,10 @@ class Version(Nitrate):
             else:
                 self._product = Product(id=product)
             self._name = version
+        elif hash is not None:
+            self._get(hash)
+            Version._cache[hash['id']] = Version._cache[
+                    hash['name']+'+'+hash['product'].name] = self
         else:
             raise NitrateError("Need either version id or both product "
                     "and version name to initialize the Version object.")
@@ -1859,35 +1893,43 @@ class Version(Nitrate):
     #  Version Methods
     # ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
 
-    def _get(self):
+    def _get(self, hash=None):
         """ Fetch version data from the server. """
 
-        # Search by id
-        if self._id is not NitrateNone:
-            try:
-                log.info("Fetching version " + self.identifier)
-                hash = self._server.Product.filter_versions({'id': self.id})
-                log.debug("Initializing version " + self.identifier)
-                log.debug(pretty(hash))
-                self._name = hash[0]["value"]
-                self._product = Product(hash[0]["product_id"])
-            except IndexError:
-                raise NitrateError(
-                        "Cannot find version for " + self.identifier)
-        # Search by product and name
+        if hash is None:
+            # Search by id
+            if self._id is not NitrateNone:
+                try:
+                    log.info("Fetching version " + self.identifier)
+                    hash = self._server.Product.filter_versions({'id': self.id})
+                    log.debug("Initializing version " + self.identifier)
+                    log.debug(pretty(hash))
+                    self._name = hash[0]["value"]
+                    self._product = Product(hash[0]["product_id"])
+                except IndexError:
+                    raise NitrateError(
+                            "Cannot find version for " + self.identifier)
+            # Search by product and name
+            else:
+                try:
+                    log.info(u"Fetching version '{0}' of '{1}'".format(
+                            self.name, self.product.name))
+                    hash = self._server.Product.filter_versions(
+                            {'product': self.product.id, 'value': self.name})
+                    log.debug(u"Initializing version '{0}' of '{1}'".format(
+                            self.name, self.product.name))
+                    log.debug(pretty(hash))
+                    self._id = hash[0]["id"]
+                except IndexError:
+                    raise NitrateError(
+                            "Cannot find version for '{0}'".format(self.name))
         else:
-            try:
-                log.info(u"Fetching version '{0}' of '{1}'".format(
-                        self.name, self.product.name))
-                hash = self._server.Product.filter_versions(
-                        {'product': self.product.id, 'value': self.name})
-                log.debug(u"Initializing version '{0}' of '{1}'".format(
-                        self.name, self.product.name))
-                log.debug(pretty(hash))
-                self._id = hash[0]["id"]
-            except IndexError:
-                raise NitrateError(
-                        "Cannot find version for '{0}'".format(self.name))
+            # Save values
+            log.debug("Initializing Version ID#{0}".format(hash["id"]))
+            log.debug(pretty(hash))
+            self._id = hash["id"]
+            self._name = hash["name"]
+            self._product = hash["product"]
 
     # ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
     #  Version Self Test
@@ -2574,28 +2616,17 @@ class Tag(Nitrate):
     # Local cache for Tag
     _cache = {}
 
-    # Resolve entry name
-    @classmethod
-    def _entry_name(cls, id, kwargs):
-        if id is not None:
-            return id
-
-        # Indexing by name
-        if 'name' in kwargs:
-            return kwargs.get("name")
-
     # ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
     #  Tag Special
     # ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
 
-    def __init__(self, id=None, name=None):
+    def __init__(self, id=None, name=None, hash=None):
         """ Initialize by tag id or tag name """
 
         # If we are a cached-already object no init is necessary
         if getattr(self, "_id", None) is not None:
             return
 
-        # Init by hash (object)
         # Initialized by name
         if isinstance(id, basestring):
             name = id
@@ -2605,12 +2636,15 @@ class Tag(Nitrate):
             self._name = NitrateNone
         elif name is not None:
             self._name = name
+        # Init by hash (object)
+        elif hash is not None:
+            pass
         else:
             raise NitrateError("Need either tag id or tag name "
                     "to initialize the Tag object.")
         Nitrate.__init__(self, id)
         if get_cache_level() >= CACHE_OBJECTS:
-            self._get()
+            self._get(hash)
             Tag._cache[self.id] = Tag._cache[self.name] = self
 
     def __unicode__(self):
@@ -2621,35 +2655,42 @@ class Tag(Nitrate):
     #  Tag Methods
     # ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
 
-    def _get(self):
+    def _get(self, hash=None):
         """ Fetch tag data from the server. """
 
-        # Search by id
-        if self._id is not NitrateNone:
-            try:
-                log.info("Fetching tag " + self.identifier)
-                hash = self._server.Tag.get_tags({'ids': [self.id]})
-                log.debug("Initializing tags " + self.identifier)
-                log.debug(pretty(hash))
-                self._name = hash[0]["name"]
-            except IndexError:
-                raise NitrateError(
-                        "Cannot find tag for {0}".format(self.identifier))
-        # Search by tag name
+        if hash is None:
+            # Search by id
+            if self._id is not NitrateNone:
+                try:
+                    log.info("Fetching tag " + self.identifier)
+                    hash = self._server.Tag.get_tags({'ids': [self.id]})
+                    log.debug("Initializing tags " + self.identifier)
+                    log.debug(pretty(hash))
+                    self._name = hash[0]["name"]
+                except IndexError:
+                    raise NitrateError(
+                            "Cannot find tag for {0}".format(self.identifier))
+            # Search by tag name
+            else:
+                try:
+                    log.info(u"Fetching tag '{0}'".format(self.name))
+                    hash = self._server.Tag.get_tags(
+                            {'names': [self.name]})
+                    # Problem if name is not found
+                    log.debug(u"Initializing tag '{0}'".format(
+                            self.name))
+                    log.debug(pretty(hash))
+                    self._id = hash[0]["id"]
+                except IndexError:
+                    raise NitrateError(
+                            "Cannot find tag for '{0}'".format(self.name))
+                    self._id = None
         else:
-            try:
-                log.info(u"Fetching tag '{0}'".format(self.name))
-                hash = self._server.Tag.get_tags(
-                        {'names': [self.name]})
-                # Problem if name is not found
-                log.debug(u"Initializing tag '{0}'".format(
-                        self.name))
-                log.debug(pretty(hash))
-                self._id = hash[0]["id"]
-            except IndexError:
-                raise NitrateError(
-                        "Cannot find tag for '{0}'".format(self.name))
-                self._id = None
+            # Save values
+            log.debug("Initializing Tag ID#{0}".format(hash["id"]))
+            log.debug(pretty(hash))
+            self._id = hash["id"]
+            self._name = hash["name"]
 
 
 # ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
@@ -4290,6 +4331,9 @@ class CaseRun(Mutable):
 
         # Update self (if modified)
         Mutable.update(self)
+
+CLASSES = [Build, Category, PlanType, Product, User, Version,
+        CaseRun, TestCase, TestPlan, TestRun]
 
 
 # ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
