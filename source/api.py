@@ -23,6 +23,7 @@
 import os
 import re
 import sys
+import time
 import types
 import pickle
 import optparse
@@ -416,10 +417,12 @@ class Nitrate(object):
     parses user configuration.
     """
 
+    _time_cached = time.time()
     _connection = None
     _settings = None
     _requests = 0
-    _cache = {}
+    _expiration = None
+
 
     # ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
     #  Nitrate Properties
@@ -457,22 +460,35 @@ class Nitrate(object):
         Nitrate._requests += 1
         return Nitrate._connection
 
-    # Class method that checks if object with id is already in cache
+    def _init(self):
+        """ Method sets all attributes of an object to NitrateNone """
+        try:
+            for attr in self._attributes:
+                setattr(self, "_" + attr, NitrateNone)
+        except AttributeError:
+            self._attributes = []
+
     @classmethod
     def _cache_lookup(cls, id, **kwargs):
+        """ Class method that checks if object with id is already in cache """
+
         # ID check
         if isinstance(id, int) or isinstance(id, basestring):
-            return cls._cache[id]
+            if (time.time() - cls._cache[id]._time_cached) < cls._expiration:
+                return cls._cache[id]
 
         # Check dictionary (only ID so far)
         if isinstance(id, dict):
-            return cls._cache[id['id']]
+            if (time.time() - cls._cache[id['id']]._time_cached)\
+                    < cls._expiration:
+                return cls._cache[id['id']]
 
         raise KeyError
 
-    # Class method that checks if object (list of objects) is cached
     @classmethod
     def _is_cached(cls, id):
+        """ Class method that checks if object (list of objects) is cached """
+
         # ID check
         if isinstance(id, int) and id in cls._cache:
             return True
@@ -485,6 +501,30 @@ class Nitrate(object):
             return True
 
         return False
+
+    @classmethod
+    def _get_expiration(cls):
+        """ Method determines expiration time """
+        # User defined expiration - top level importance
+        if cls._expiration is not None:
+            return cls._expiration
+
+        try:
+            # Medium level importance - direct expiration
+            cls._expiration = getattr(
+                    Config().expiration, cls.__name__.lower())
+        except AttributeError:
+            # Default expiration for specific class
+            cls._expiration = cls._default_expiration
+
+        return cls._expiration * 3600
+
+    @classmethod
+    def set_expiration(cls, expiration):
+        """  Static method for setting expiration time to specified value """
+        if expiration == -1:
+             expiration = sys.maxint
+        cls._expiration = expiration
 
 
     # ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
@@ -499,6 +539,7 @@ class Nitrate(object):
 
         # Search the cache for ID
         try:
+            cls._expiration = cls._get_expiration()
             temp = cls._cache_lookup(id, **kwargs)
             log.debug("Using cached object {0} {1}".format(cls.__name__, id))
             return temp
@@ -514,11 +555,7 @@ class Nitrate(object):
         """ Initialize the object id, prefix and internal attributes. """
         # Set up prefix and internal attributes
         self._prefix = prefix
-        try:
-            for attr in self._attributes:
-                setattr(self, "_" + attr, NitrateNone)
-        except AttributeError:
-            self._attributes = []
+        self._init()
 
         # Check and set the object id
         if id is None:
@@ -531,6 +568,8 @@ class Nitrate(object):
             except ValueError:
                 raise NitrateError("Invalid {0} id: '{1}'".format(
                         self.__class__.__name__, id))
+
+        self._time_cached = time.time()
 
     def __str__(self):
         """ Provide ascii string representation. """
@@ -633,6 +672,8 @@ class Build(Nitrate):
 
     # Local cache of Build
     _cache = {}
+    # Set default expiration of Build to 12 months
+    _default_expiration = 8640
 
     # ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
     #  Build Properties
@@ -654,6 +695,7 @@ class Build(Nitrate):
         if getattr(self, "_id", None) is not None:
             return
 
+        self._attributes = ["name"]
         # Initialized by dictionary
         if isinstance(id, dict):
             inject = id
@@ -682,8 +724,6 @@ class Build(Nitrate):
         # Create entries in cache that reference the same object
         if get_cache_level() >= CACHE_OBJECTS:
             self._get(inject)
-            Build._cache[self.id] = Build._cache[
-                    self.name+'+'+self.product.name] = self
 
     def __unicode__(self):
         """ Build name for printing. """
@@ -731,6 +771,10 @@ class Build(Nitrate):
             self._name = inject["name"]
             self._product = inject["product"]
 
+        if get_cache_level() >= CACHE_OBJECTS:
+            Build._cache[self.id] = Build._cache[
+                    self.name+'+'+self.product.name] = self
+
     # ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
     #  Build Self Test
     # ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
@@ -770,6 +814,8 @@ class Category(Nitrate):
 
     # Local cache of Category objects indexed by category id
     _cache = {}
+    # Set default expiration of Category to 12 months
+    _default_expiration = 8640
 
     # ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
     #  Category Properties
@@ -797,10 +843,13 @@ class Category(Nitrate):
         if getattr(self, "_id", None) is not None:
             return
 
+        self._attributes = ["name", "product"]
         # Init by initial object dict
         if isinstance(id, dict):
             inject = id
             id = None
+        else:
+            inject = None
         # Initialized by id
         if id is not None:
             self._name = self._product = NitrateNone
@@ -822,8 +871,6 @@ class Category(Nitrate):
         Nitrate.__init__(self, id)
         if get_cache_level() >= CACHE_OBJECTS:
             self._get(inject)
-            Category._cache[self.id] = Category._cache[
-                    self.name+'+'+self.product.name] = self
 
     def __unicode__(self):
         """ Category name for printing. """
@@ -870,6 +917,10 @@ class Category(Nitrate):
             self._id = inject["id"]
             self._name = inject["name"]
             self._product = inject["product"]
+
+        if get_cache_level() >= CACHE_OBJECTS:
+            Category._cache[self.id] = Category._cache[
+                    self.name+'+'+self.product.name] = self
 
     # ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
     #  Category Self Test
@@ -935,6 +986,8 @@ class PlanType(Nitrate):
 
     # Local cache of PlanType objects indexed by plan type id
     _cache = {}
+    # Set default expiration of PlanType to 1 year
+    _default_expiration = 8640
 
     # ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
     #  PlanType Properties
@@ -955,6 +1008,7 @@ class PlanType(Nitrate):
         if getattr(self, "_id", None) is not None:
             return
 
+        self._attributes = ["name"]
         # Initialization by initial object dict
         if isinstance(id, dict):
             inject = id
@@ -980,10 +1034,8 @@ class PlanType(Nitrate):
                     "Need either id or name to initialize the PlanType object")
         Nitrate.__init__(self, id)
 
-        # Create entries in cache that reference the same object
         if get_cache_level() >= CACHE_OBJECTS:
             self._get(inject)
-            PlanType._cache[self.id] = PlanType._cache[self.name] = self
 
     def __unicode__(self):
         """ PlanType name for printing """
@@ -1026,6 +1078,9 @@ class PlanType(Nitrate):
             log.debug(pretty(inject))
             self._id = inject["id"]
             self._name = inject["name"]
+
+        if get_cache_level() >= CACHE_OBJECTS:
+            PlanType._cache[self.id] = PlanType._cache[self.name] = self
 
     # ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
     #  PlanType Self Test
@@ -1186,6 +1241,8 @@ class Product(Nitrate):
 
     # Local cache of Product
     _cache = {}
+    # Set default expiration of Product to 12 months
+    _default_expiration = 8640
 
     # ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
     #  Product Properties
@@ -1214,6 +1271,7 @@ class Product(Nitrate):
         if getattr(self, "_id", None) is not None:
             return
 
+        self._attributes = ["name", "version"]
         # Init by initial object dict
         if isinstance(id, dict):
             inject = id
@@ -1238,10 +1296,8 @@ class Product(Nitrate):
             raise NitrateError("Need id or name to initialize Product")
         Nitrate.__init__(self, id)
 
-        # Create entries in cache that reference the same object
         if get_cache_level() >= CACHE_OBJECTS:
             self._get(inject)
-            Product._cache[self.id] = Product._cache[self.name] = self
 
         # Optionally initialize version
         if version is not None:
@@ -1300,6 +1356,10 @@ class Product(Nitrate):
             self._name = inject["name"]
             if 'version' in inject:
                 self._version = inject["version"]
+
+        if get_cache_level() >= CACHE_OBJECTS:
+            Product._cache[self.id] = Product._cache[self.name] = self
+
 
     # ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
     #  Product Self Test
@@ -1596,6 +1656,8 @@ class User(Nitrate):
 
     # Local cache of User objects indexed by user id
     _cache = {}
+    # Set default expiration of User to 2 years
+    _default_expiration = 17280
 
     # ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
     #  User Properties
@@ -1624,7 +1686,7 @@ class User(Nitrate):
             return
 
         # Initialize values
-        self._name = self._login = self._email = NitrateNone
+        self._attributes = ["name", "login", "email"]
         id, login, email = self._parse(id, login, email)
         # Init by initial object dict
         if isinstance(id, dict):
@@ -1638,10 +1700,8 @@ class User(Nitrate):
         elif email is not None:
             self._email = email
 
-        # Create entries in cache that reference the same object
         if get_cache_level() >= CACHE_OBJECTS:
             self._get(inject)
-            User._cache[self.id] = User._cache[self.login] = User._cache[self.email] = self
 
     def __unicode__(self):
         """ User login for printing. """
@@ -1713,6 +1773,9 @@ class User(Nitrate):
             self._name = inject["first_name"] + " " + inject["last_name"]
         else:
             self._name = None
+
+        if get_cache_level() >= CACHE_OBJECTS:
+            User._cache[self.id] = User._cache[self.login] = User._cache[self.email] = self
 
     # ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
     #  User Self Test
@@ -1834,6 +1897,8 @@ class Version(Nitrate):
 
     # Local cache of Version
     _cache = {}
+    # Set default expiration of Version to 12 months
+    _default_expiration = 8640
 
     # ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
     #  Version Properties
@@ -1855,6 +1920,7 @@ class Version(Nitrate):
         if getattr(self, "_id", None) is not None:
             return
 
+        self._attributes = ["product","version"]
         # Init by initial object dict
         if isinstance(id, dict):
             inject = id
@@ -1875,18 +1941,14 @@ class Version(Nitrate):
                 self._product = Product(id=product)
             self._name = version
         elif inject is not None:
-            self._get(inject)
-            Version._cache[inject['id']] = Version._cache[
-                    inject['name']+'+'+inject['product'].name] = self
+            pass
         else:
             raise NitrateError("Need either version id or both product "
                     "and version name to initialize the Version object.")
         Nitrate.__init__(self, id)
-        # Create entries in cache that reference the same object
+
         if get_cache_level() >= CACHE_OBJECTS:
             self._get(inject)
-            Version._cache[self.id] = Version._cache[
-                    self.name+'+'+self.product.name] = self
 
     def __unicode__(self):
         """ Version name for printing. """
@@ -1934,6 +1996,10 @@ class Version(Nitrate):
             self._id = hash["id"]
             self._name = hash["name"]
             self._product = hash["product"]
+
+        if get_cache_level() >= CACHE_OBJECTS:
+            Version._cache[self.id] = Version._cache[
+                    self.name+'+'+self.product.name] = self
 
     # ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
     #  Version Self Test
@@ -2165,14 +2231,14 @@ class Component(Nitrate):
 
         # Prepare attributes, check component hash, initialize
         self._attributes = ["name", "product"]
-        componenthash = kwargs.get("componenthash")
-        if componenthash:
-            id = componenthash["id"]
+        if isinstance(id, dict):
+            inject = id
+            id = instance["id"]
         Nitrate.__init__(self, id)
 
         # If hash provided, let's initialize the data immediately
-        if componenthash:
-            self._get(componenthash=componenthash)
+        if inject:
+            self._get(inject)
         # Initialized by product and component
         elif product and name:
             # Detect product format
@@ -2196,13 +2262,13 @@ class Component(Nitrate):
     #  Component Methods
     # ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
 
-    def _get(self, componenthash=None):
+    def _get(self, inject=None):
         """ Get the missing component data. """
 
         # Search by component id or use prepared component hash
         if self._id is not NitrateNone:
             try:
-                if not componenthash:
+                if not inject:
                     log.info("Fetching component " + self.identifier)
                     componenthash = self._server.Product.get_component(self.id)
                 log.debug("Initializing component " + self.identifier)
@@ -2230,7 +2296,7 @@ class Component(Nitrate):
     @staticmethod
     def search(**query):
         """ Search for components. """
-        return [Component(componenthash=hash) for hash in
+        return [Component(hash) for hash in
                 Nitrate()._server.Product.filter_components(dict(query))]
 
 
@@ -2325,7 +2391,7 @@ class CaseComponents(Container):
     def _get(self):
         """ Fetch currently linked components from the server. """
         log.info("Fetching {0}'s components".format(self._identifier))
-        self._current = set([Component(componenthash=hash)
+        self._current = set([Component(hash)
                 for hash in self._server.TestCase.get_components(self.id)])
         self._original = set(self._current)
 
@@ -2630,6 +2696,7 @@ class Tag(Nitrate):
         if getattr(self, "_id", None) is not None:
             return
 
+        self._attributes = ["name"]
         # Initialized by initial object dict
         if isinstance(id, dict):
             inject = id
@@ -2921,6 +2988,8 @@ class TestPlan(Mutable):
 
     # Local cache of TestPlan
     _cache = {}
+    # Set default expiration of TestPlan to 2 days
+    _default_expiration = 48
 
     # ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
     #  Test Plan Properties
@@ -3109,7 +3178,7 @@ class TestPlan(Mutable):
         else:
             hash = inject
         log.debug("Initializing test plan " + self.identifier)
-        log.debug(pretty())
+        log.debug(pretty(hash))
         if not "plan_id" in hash:
             log.error(pretty(hash))
             raise NitrateError("Failed to initialize " + self.identifier)
@@ -3130,6 +3199,8 @@ class TestPlan(Mutable):
         self._tags = PlanTags(self)
         self._testcases = TestCases(self)
         self._children = ChildPlans(self)
+
+        TestPlan._cache[self._id] = self
 
     def _update(self):
         """ Save test plan data to the server. """
@@ -3252,7 +3323,7 @@ class TestPlans(Container):
     def _get(self):
         """ Fetch currently linked test plans from the server. """
         log.info("Fetching {0}'s plans".format(self._identifier))
-        self._current = set([TestPlan(inject=hash)
+        self._current = set([TestPlan(hash)
                     for hash in self._server.TestCase.get_plans(self.id)])
         self._original = set(self._current)
 
@@ -3284,6 +3355,8 @@ class TestRun(Mutable):
 
     # Local cache of TestRun
     _cache = {}
+    # Set default expiration of TestRun to 12 hours
+    _default_expiration = 12
 
     # ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
     #  Test Run Properties
@@ -3322,23 +3395,26 @@ class TestRun(Mutable):
             # Fetch both test cases & test case runs
             log.info("Fetching {0}'s case runs".format(self.identifier))
             caseruns = self._server.TestRun.get_test_case_runs(self.id)
-            testcaseids = []
-            for caserun in caseruns:
-                testcaseids.append(caserun['case_id'])
-            print testcaseids
-            # Fetch test cases only if not all cached
+            testcaseids = [caserun['case_id'] for caserun in caseruns]
             if not TestCase._is_cached(testcaseids):
+                # Fetch test cases only if not all cached
                 log.info("Fetching {0}'s test cases".format(self.identifier))
                 testcases = self._server.TestRun.get_test_cases(self.id)
-                for testcase in testcases:
-                    TestCase(testcase)
             else:
                 testcases = [TestCase(id) for id in testcaseids]
             # Create the CaseRun objects
-            self._caseruns = [
-                    CaseRun(caserun, testcaseinject=testcase)
-                    for caserun in caseruns for testcase in testcases
-                    if int(testcase["case_id"]) == int(caserun["case_id"])]
+            if len(testcaseids) > 0 and isinstance(testcases[0], dict):
+                # Create from dictionary
+                self._caseruns = [
+                        CaseRun(caserun, testcaseinject=testcase)
+                        for caserun in caseruns for testcase in testcases
+                        if int(testcase["case_id"]) == int(caserun["case_id"])]
+            elif len(testcaseids) > 0 and isinstance(testcases[0], TestCase):
+                # Create from objects (using caching)
+                self._caseruns = [
+                        CaseRun(caserun, testcaseinject=testcase)
+                        for caserun in caseruns for testcase in testcases
+                        if int(testcase.id) == int(caserun["case_id"])]
         return self._caseruns
 
     @property
@@ -3533,6 +3609,9 @@ class TestRun(Mutable):
         # Initialize containers
         self._tags = RunTags(self)
 
+        TestRun._cache[self._id] = self
+
+
     def _update(self):
         """ Save test run data to the server. """
 
@@ -3671,6 +3750,8 @@ class TestCase(Mutable):
 
     # Local cache of TestCase
     _cache = {}
+    # Set default expiration of TestCase to 12 hours
+    _default_expiration = 12
 
     # ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
     #  Test Case Properties
@@ -3902,6 +3983,7 @@ class TestCase(Mutable):
             testcasehash = self._server.TestCase.get(self.id)
         else:
             testcasehash = inject
+            print testcasehash
         log.debug("Initializing test case " + self.identifier)
         log.debug(pretty(testcasehash))
 
@@ -3939,6 +4021,9 @@ class TestCase(Mutable):
         self._tags = CaseTags(self)
         self._testplans = TestPlans(self)
         self._components = CaseComponents(self)
+
+        if get_cache_level() >= CACHE_OBJECTS:
+            TestCase._cache[self.id] = self
 
     def _update(self):
         """ Save test case data to server """
@@ -4232,6 +4317,8 @@ class CaseRun(Mutable):
 
     # Local cache of CaseRun
     _cache = {}
+    # Set default expiration of CaseRun to 1 hour
+    _default_expiration = 1
 
     # ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
     #  Case Run Properties
@@ -4389,13 +4476,17 @@ class CaseRun(Mutable):
             self._sortkey = None
         self._status = Status(caserunhash["case_run_status_id"])
         self._testrun = TestRun(caserunhash["run_id"])
-        if testcaseinject:
+        if testcaseinject and isinstance(testcaseinject, dict):
             self._testcase = TestCase(testcaseinject)
+        elif testcaseinject and isinstance(testcaseinject, TestCase):
+            self._testcase = testcaseinject
         else:
             self._testcase = TestCase(caserunhash["case_id"])
 
         # Initialize containers
         self._bugs = Bugs(self)
+
+        CaseRun._cache[self._id] = self
 
     def _update(self):
         """ Save test case run data to the server. """
@@ -4430,7 +4521,9 @@ class CaseRun(Mutable):
 #  Cache Class
 # ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
 class Cache(Nitrate):
-    """ Class responsible for caching multiple objects and creating/loading
+    """ Cache class
+
+        Class responsible for caching multiple objects and creating/loading
         local persistent cache.
     """
 
@@ -4438,40 +4531,58 @@ class Cache(Nitrate):
             CaseRun, TestCase, TestPlan, TestRun, Component]
 
     def determine_file_path():
+        """ Determine file path """
         try:
             return Config().expiration.file
         except:
-            return '/tmp/data.pkl'
+            return None
 
-    _file_name = determine_file_path()
+    _file = determine_file_path()
 
-    def dump_cache(self):
-        # Open file to cache classes
-        output_file = open(self._file_name, 'wb')
-        output = {}
-        for current_class in _classes:
-            output[current_class.__name__] = current_class._cache
-        # Dump caches to file
-        pickle.dump(output, output_file)
-        output_file.close()
+    @staticmethod
+    def save_cache():
+        """ Save caches to specified file """
+        if Cache._file is not None:
+            # Open file to cache classes
+            output_file = open(Cache._file, 'wb')
+            output = {}
+            for current_class in Cache._classes:
+                print current_class, current_class._cache, sys.getsizeof(current_class._cache)
+                output[current_class.__name__] = current_class._cache
+            # Dump caches to file
+            pickle.dump(output, output_file)
+            output_file.close()
 
-    def load_cache(self):
-        # Open file to load caches
-        input_file = open(self._file_name, 'rb')
-        # Load caches from file
-        data = pickle.load(input_file)
-        for current_class in _classes:
-            current_class._cache = data[current_class.__name__]
-        input_file.close()
+    @staticmethod
+    def load_cache():
+        """ Load caches from specified file """
+        if Cache._file is not None:
+            # Open file to load caches
+            input_file = open(Cache._file, 'rb')
+            # Load caches from file
+            data = pickle.load(input_file)
+            for current_class in Cache._classes:
+                current_class._cache = data[current_class.__name__]
+            input_file.close()
 
-    def clear_cache(self):
+    @staticmethod
+    def clear_cache():
+        """ Clear caches in all classes """
         for current_class in _classes:
             current_class._cache = {}
 
-    def expire_cache(self):
-        for current_class in _classes:
-            for current_object in current_class:
-                pass
+    @staticmethod
+    def expire_cache():
+        """ Delete and unlink every expired entry in cache """
+        for current_class in Cache._classes:
+            for current_object in current_class._cache:
+                # Check if object is expired
+                if (time.time() -\
+                        current_class._cache[current_object]._time_cached) >\
+                        current_class._get_expiration() or \
+                        isinstance(current_object._time_cached, NitrateNone):
+                    # Set all attributes to NitrateNone
+                    Nitrate._init(current_class._cache[current_object])
 
 
 # ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
